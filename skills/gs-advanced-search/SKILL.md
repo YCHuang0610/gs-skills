@@ -26,7 +26,7 @@ Map the user's intent to Google Scholar URL parameters:
 | Journal/Source | `as_publication` | `as_publication=Nature` |
 | Start year | `as_ylo` | `as_ylo=2020` |
 | End year | `as_yhi` | `as_yhi=2025` |
-| Exact phrase | `as_epq` | `as_epq=machine+learning` |
+| Exact phrase | `q` with quotes | `q=%22machine+learning%22` |
 | Any of these words (OR) | `as_oq` | `as_oq=immunotherapy+checkpoint` |
 | Exclude words | `as_eq` | `as_eq=review` |
 | Search scope | `as_occt` | `as_occt=title` (title only) / `as_occt=any` (anywhere) |
@@ -36,11 +36,14 @@ Map the user's intent to Google Scholar URL parameters:
 **Construction examples:**
 - "Einstein 2020 年以后在 Nature 上的论文" → `scholar?as_sauthors=Einstein&as_publication=Nature&as_ylo=2020&hl=en`
 - "标题包含 CRISPR 的论文" → `scholar?q=CRISPR&as_occt=title&hl=en`
-- "精确搜索 'deep learning' 排除 review" → `scholar?as_epq=deep+learning&as_eq=review&hl=en`
+- "精确搜索 'deep learning' 排除 review" → `scholar?q=%22deep+learning%22&as_eq=review&hl=en`
+- "标题精确包含 'graph neural network' 且 2024 年以后" → `scholar?q=%22graph+neural+network%22&as_occt=title&as_ylo=2024&hl=en`
 - "搜索 immunotherapy 或 checkpoint 相关论文" → `scholar?as_oq=immunotherapy+checkpoint&hl=en`
 
 **Notes:**
 - When `as_sauthors`, `as_publication`, etc. are used, `q` can be omitted or used for additional keywords
+- For exact phrase searches, prefer quoted `q` (`q=%22...%22`) over `as_epq`. Google Scholar currently returns overly broad results when `as_epq` is combined with `as_occt=title`.
+- For title-only searches, always put the searchable words in `q` and add `as_occt=title`; do not use `as_epq` as the only text-bearing parameter.
 - Always include `hl=en` for consistent results
 - Use `num=10` (default) to minimize CAPTCHA risk
 

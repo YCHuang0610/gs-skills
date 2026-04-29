@@ -1,6 +1,6 @@
 ---
 name: gs-fulltext
-description: Get full-text access links for a Google Scholar paper - PDF, DOI, Sci-Hub, and publisher links. Use when user wants to read or download a paper's full text.
+description: Get full-text access links for a Google Scholar paper - Scholar PDF, DOI, publisher, Unpaywall, PMC/Europe PMC, and arXiv links. Use when user wants to read or download a paper's full text.
 argument-hint: "[data-cid or result number from previous search]"
 ---
 
@@ -57,10 +57,7 @@ async () => {
   const journalYear = parts[1]?.trim() || '';
 
   // Try to extract DOI from paper URL
-  let doi = '';
-  if (paperUrl.includes('doi.org/')) {
-    doi = paperUrl.replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
-  }
+  const doi = (paperUrl.match(/10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i) || [''])[0].toLowerCase();
 
   // Build access links
   const links = {};
@@ -76,10 +73,6 @@ async () => {
 
   if (doi) {
     links.doi = `https://doi.org/${doi}`;
-    links.scihub = `https://sci-hub.ru/${doi}`;
-  } else if (paperUrl) {
-    // Sci-Hub also works with direct URLs
-    links.scihub = `https://sci-hub.ru/${paperUrl}`;
   }
 
   return {
@@ -112,22 +105,40 @@ async () => {
 **DOI:**
 {links.doi ? "- " + links.doi : "No DOI detected"}
 
-**Sci-Hub:**
-{links.scihub ? "- " + links.scihub : "N/A"}
+**OA/Authorized Access:**
+- If a DOI is available, optionally run the local resolver below to add Unpaywall, PMC/Europe PMC, and arXiv links.
 ```
 
-### Step 4: Open full text (optional)
+### Step 4: Optional OA enrichment script
+
+For better full-text resolution, pass the extracted record JSON to the local resolver:
+
+```bash
+python3 /Users/burgerhuang/.codex/skills/gs-fulltext/scripts/resolve_fulltext.py \
+  --input /tmp/gs_record.json \
+  --email researcher@example.edu
+```
+
+The script accepts the same fields extracted above (`title`, `doi`, `paperUrl`, `href`, `fullTextUrl`, `pmcid`, `arxiv_id`) and returns:
+- normalized DOI and DOI URL
+- publisher URL
+- Scholar/OpenAlex-style PDF links already present in the record
+- Unpaywall best OA links when `--email` is provided
+- PMC/Europe PMC PDF links for PMCID
+- arXiv PDF links for arXiv IDs
+
+### Step 5: Open full text (optional)
 
 If the user wants to read the paper immediately, use `mcp__chrome-devtools__new_page` to open the preferred link in this priority:
-1. `fullTextUrl` (direct PDF/HTML, usually free)
-2. DOI link (may require subscription)
-3. Sci-Hub link (fallback)
-4. Publisher page
+1. Direct OA PDF/HTML link from Scholar or the resolver
+2. PMC/Europe PMC or arXiv link
+3. DOI link
+4. Publisher page, using only access the user is authorized to use
 
 ## Notes
 
 - This skill uses 1-2 tool calls: `evaluate_script` (if already on results page) or `navigate_page` + `evaluate_script`
 - Google Scholar's full-text links (`.gs_ggs`) are usually free/open-access PDFs
-- DOI may not always be extractable from the paper URL
-- Sci-Hub works with both DOI and direct URL
+- DOI is extracted from both `doi.org` URLs and publisher URLs containing a `10.xxxx/...` DOI path
+- Do not use Sci-Hub, shadow libraries, credential sharing, or access-control bypasses
 - Opening full text in a new tab adds 1 more tool call (`new_page`)

@@ -18,7 +18,17 @@ import hashlib
 import urllib.request
 import urllib.error
 import re
+import os
 from datetime import datetime, timezone
+
+from gs_lit_utils import (
+    collect_oa_urls,
+    enrich_unpaywall,
+    extract_doi,
+    http_get,
+    normalize_doi,
+    validate_download,
+)
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
@@ -113,6 +123,7 @@ def parse_pubmed_authors(author_str):
 def build_zotero_item(paper):
     """Build Zotero item JSON from PubMed paper data."""
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    doi = normalize_doi(paper.get('doi')) or extract_doi(paper.get('url', ''))
 
     # Parse authors
     if isinstance(paper.get('authors'), list) and paper['authors']:
@@ -158,8 +169,8 @@ def build_zotero_item(paper):
         'publicationTitle': paper.get('journal') or paper.get('fulljournalname', ''),
         'journalAbbreviation': paper.get('journalAbbr') or paper.get('source', ''),
         'issue': paper.get('issue', ''),
-        'DOI': paper.get('doi', ''),
-        'url': f'https://pubmed.ncbi.nlm.nih.gov/{paper["pmid"]}/' if paper.get('pmid') else '',
+        'DOI': doi,
+        'url': f'https://pubmed.ncbi.nlm.nih.gov/{paper["pmid"]}/' if paper.get('pmid') else paper.get('url', ''),
         'creators': creators,
         'tags': [{'tag': k, 'type': 1} for k in paper.get('keywords', [])],
         'attachments': [],
@@ -178,6 +189,10 @@ def build_zotero_item(paper):
     if paper.get('pubtype'):
         pub_types = paper['pubtype'] if isinstance(paper['pubtype'], str) else ', '.join(paper['pubtype'])
         extra_parts.append(f'Publication Type: {pub_types}')
+    if paper.get('dataCid'):
+        extra_parts.append(f'Google Scholar data-cid: {paper["dataCid"]}')
+    if paper.get('publisher'):
+        extra_parts.append(f'Publisher: {paper["publisher"]}')
     if extra_parts:
         item['extra'] = '\n'.join(extra_parts)
 
@@ -223,37 +238,29 @@ def save_items(items, uri=''):
     return 201, msg, session_id
 
 
-def resolve_pdf_url(paper):
-    """Get the best PDF URL from paper data."""
-    pdf_url = paper.get('pdfUrl') or paper.get('fullTextUrl') or ''
-    if pdf_url:
-        return pdf_url
-    if paper.get('pmcid'):
-        pmcid = paper['pmcid']
-        if not pmcid.startswith('PMC'):
-            pmcid = f'PMC{pmcid}'
-        return f'https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/'
-    return ''
+def resolve_pdf_urls(paper):
+    """Get candidate legally accessible PDF URLs from paper data."""
+    email = paper.get('unpaywallEmail') or os.environ.get('GS_UNPAYWALL_EMAIL') or os.environ.get('UNPAYWALL_EMAIL')
+    if email:
+        paper = enrich_unpaywall(dict(paper), email)
+    candidates = []
+    seen = set()
+    for url, kind in collect_oa_urls(paper):
+        if kind != 'pdf' or not url or url in seen:
+            continue
+        seen.add(url)
+        candidates.append(url)
+    return candidates
 
 
 def download_pdf(pdf_url, timeout=PDF_DOWNLOAD_TIMEOUT):
     """Download PDF from URL. Returns (bytes, error_msg|None)."""
-    req = urllib.request.Request(pdf_url, headers={
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/pdf,*/*',
-    })
     try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        data = resp.read()
-        content_type = resp.headers.get('Content-Type', '')
-
-        if len(data) < 1024:
-            return None, f'Too small ({len(data)} bytes), likely a redirect page'
-        if data[:5] != b'%PDF-' and 'application/pdf' not in content_type:
-            return None, f'Not a PDF (Content-Type: {content_type})'
-
-        return data, None
+        resp = http_get(pdf_url, accept='application/pdf,*/*', timeout=timeout)
+        ok, status, message = validate_download(resp, 'pdf')
+        if not ok:
+            return None, f'{status}: {message}'
+        return resp.body, None
     except urllib.error.HTTPError as e:
         return None, f'HTTP {e.code}'
     except urllib.error.URLError as e:
@@ -363,15 +370,23 @@ def main():
     pdf_ok = 0
     pdf_fail = 0
     for i, (paper, item) in enumerate(zip(papers, items)):
-        pdf_url = resolve_pdf_url(paper)
-        if not pdf_url:
+        pdf_urls = resolve_pdf_urls(paper)
+        if not pdf_urls:
             continue
 
         item_id = item.get('id', f'pm_{session_id}_{i}')
 
-        pdf_bytes, err = download_pdf(pdf_url)
-        if not pdf_bytes:
-            print(f'  PDF skip: {err} ({pdf_url[:80]})')
+        pdf_bytes = None
+        pdf_url = ''
+        errors = []
+        for candidate_url in pdf_urls:
+            pdf_bytes, err = download_pdf(candidate_url)
+            if pdf_bytes:
+                pdf_url = candidate_url
+                break
+            errors.append(f'{err} ({candidate_url[:80]})')
+        if not pdf_bytes or not pdf_url:
+            print(f'  PDF skip: {"; ".join(errors[:3])}')
             pdf_fail += 1
             continue
 
